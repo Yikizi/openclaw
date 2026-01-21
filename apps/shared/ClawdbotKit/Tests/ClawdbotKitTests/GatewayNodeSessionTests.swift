@@ -39,6 +39,28 @@ struct GatewayNodeSessionTests {
     }
 
     @Test
+    func invokeWithTimeoutReturnsWhenHandlerNeverCompletes() async {
+        let request = BridgeInvokeRequest(id: "stall", command: "x", paramsJSON: nil)
+        let response = try? await AsyncTimeout.withTimeoutMs(
+            timeoutMs: 200,
+            onTimeout: { NSError(domain: "GatewayNodeSessionTests", code: 1) },
+            operation: {
+                await GatewayNodeSession.invokeWithTimeout(
+                    request: request,
+                    timeoutMs: 10,
+                    onInvoke: { _ in
+                        await withCheckedContinuation { _ in }
+                    }
+                )
+            }
+        )
+
+        #expect(response != nil)
+        #expect(response?.ok == false)
+        #expect(response?.error?.code == .unavailable)
+    }
+
+    @Test
     func invokeWithTimeoutZeroDisablesTimeout() async {
         let request = BridgeInvokeRequest(id: "1", command: "x", paramsJSON: nil)
         let response = await GatewayNodeSession.invokeWithTimeout(

@@ -9,6 +9,7 @@ import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { theme } from "../terminal/theme.js";
 import { renderTable } from "../terminal/table.js";
+import type { ChannelDirectoryEntry } from "../channels/plugins/types.core.js";
 
 function parseLimit(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -28,6 +29,15 @@ function buildRows(entries: Array<{ id: string; name?: string | undefined }>) {
     ID: entry.id,
     Name: entry.name?.trim() ?? "",
   }));
+}
+
+function formatEntry(entry: ChannelDirectoryEntry): string {
+  const name = entry.name?.trim();
+  const handle = entry.handle?.trim();
+  const handleLabel = handle ? (handle.startsWith("@") ? handle : `@${handle}`) : null;
+  const label = [name, handleLabel].filter(Boolean).join(" ");
+  if (!label) return entry.id;
+  return `${label} ${theme.muted(`(${entry.id})`)}`;
 }
 
 export function registerDirectoryCli(program: Command) {

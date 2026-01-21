@@ -11,6 +11,35 @@ private struct NodeInvokeRequestPayload: Codable, Sendable {
     var idempotencyKey: String?
 }
 
+// Ensures the timeout can win even if the invoke task never completes.
+private actor InvokeTimeoutRace {
+    private var finished = false
+    private let continuation: CheckedContinuation<BridgeInvokeResponse, Never>
+    private var invokeTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    init(continuation: CheckedContinuation<BridgeInvokeResponse, Never>) {
+        self.continuation = continuation
+    }
+
+    func registerTasks(invoke: Task<Void, Never>, timeout: Task<Void, Never>) {
+        self.invokeTask = invoke
+        self.timeoutTask = timeout
+        if finished {
+            invoke.cancel()
+            timeout.cancel()
+        }
+    }
+
+    func finish(_ response: BridgeInvokeResponse) {
+        guard !finished else { return }
+        finished = true
+        continuation.resume(returning: response)
+        invokeTask?.cancel()
+        timeoutTask?.cancel()
+    }
+}
+
 public actor GatewayNodeSession {
     private let logger = Logger(subsystem: "com.clawdbot", category: "node.gateway")
     private let decoder = JSONDecoder()
@@ -34,22 +63,32 @@ public actor GatewayNodeSession {
             return await onInvoke(request)
         }
 
-        return await withTaskGroup(of: BridgeInvokeResponse.self) { group in
-            group.addTask { await onInvoke(request) }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
-                return BridgeInvokeResponse(
-                    id: request.id,
-                    ok: false,
-                    error: ClawdbotNodeError(
-                        code: .unavailable,
-                        message: "node invoke timed out")
-                )
-            }
+        let cappedTimeout = min(timeout, Int(UInt64.max / 1_000_000))
+        let timeoutResponse = BridgeInvokeResponse(
+            id: request.id,
+            ok: false,
+            error: ClawdbotNodeError(
+                code: .unavailable,
+                message: "node invoke timed out")
+        )
 
-            let first = await group.next()!
-            group.cancelAll()
-            return first
+        return await withCheckedContinuation { continuation in
+            let race = InvokeTimeoutRace(continuation: continuation)
+            let invokeTask = Task {
+                let response = await onInvoke(request)
+                await race.finish(response)
+            }
+            let timeoutTask = Task {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(cappedTimeout) * 1_000_000)
+                } catch {
+                    return
+                }
+                await race.finish(timeoutResponse)
+            }
+            Task {
+                await race.registerTasks(invoke: invokeTask, timeout: timeoutTask)
+            }
         }
     }
     private var serverEventSubscribers: [UUID: AsyncStream<EventFrame>.Continuation] = [:]

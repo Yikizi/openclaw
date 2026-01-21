@@ -32,6 +32,7 @@ Docs: https://docs.clawd.bot
 - Diagnostics: emit message-flow diagnostics across channels via shared dispatch; gate heartbeat/webhook logging. (#1244) — thanks @oscargavin.
 - CLI: preserve cron delivery settings when editing message payloads. (#1322) — thanks @KrauseFx.
 - CLI: keep `clawdbot logs` output resilient to broken pipes while preserving progress output.
+- Nodes: enforce node.invoke timeouts for node handlers. (#1357) — thanks @vignesh07.
 - Model catalog: avoid caching import failures, log transient discovery errors, and keep partial results. (#1332) — thanks @dougvk.
 - Doctor: clarify plugin auto-enable hint text in the startup banner.
 - Gateway: clarify unauthorized handshake responses with token/password mismatch guidance.
