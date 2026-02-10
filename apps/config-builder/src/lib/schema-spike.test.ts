@@ -39,8 +39,6 @@ describe("buildExplorerSnapshot", () => {
       .find((field) => field.path === "tools.alsoAllow");
     expect(arrayField?.kind).toBe("array");
     expect(arrayField?.itemKind).toBe("string");
-    expect(arrayField?.itemEnumValues).toContain("exec");
-    expect(arrayField?.itemEnumValues).toContain("group:fs");
 
     const recordField = snapshot.sections
       .flatMap((section) => section.fields)

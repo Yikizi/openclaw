@@ -1,4 +1,5 @@
 import { LitElement, html, nothing } from "lit";
+import { TOOL_GROUPS } from "../../../../src/agents/tool-policy.ts";
 import {
   clearFieldValue,
   getFieldValue,
@@ -61,6 +62,26 @@ const COMMON_MODEL_IDS = [
   "openrouter/openai/gpt-5-mini",
   "xai/grok-4",
 ];
+
+const TOOL_POLICY_BASE_SUGGESTIONS = Array.from(
+  new Set([
+    ...Object.keys(TOOL_GROUPS),
+    ...Object.values(TOOL_GROUPS).flat(),
+    "group:plugins",
+  ]),
+).toSorted((a, b) => a.localeCompare(b));
+
+function isToolPolicyPath(path: string): boolean {
+  const normalized = path.replace(/\[\]/g, ".*");
+  return (
+    /^tools\.(allow|alsoAllow|deny)$/.test(normalized) ||
+    /^tools\.byProvider\.\*\.(allow|alsoAllow|deny)$/.test(normalized) ||
+    /^tools\.sandbox\.tools\.(allow|alsoAllow|deny)$/.test(normalized) ||
+    /^agents\.list\.\*\.tools\.(allow|alsoAllow|deny)$/.test(normalized) ||
+    /^agents\.list\.\*\.tools\.byProvider\.\*\.(allow|alsoAllow|deny)$/.test(normalized) ||
+    /^agents\.list\.\*\.tools\.sandbox\.tools\.(allow|alsoAllow|deny)$/.test(normalized)
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -276,6 +297,7 @@ class ConfigBuilderApp extends LitElement {
   private suggestionCacheConfig: ConfigDraft | null = null;
   private modelSuggestionsCache: string[] = [];
   private authProfileSuggestionsCache: string[] = [];
+  private toolPolicySuggestionsCache: string[] = [];
 
   private topbarScrolled = false;
 
@@ -494,6 +516,22 @@ class ConfigBuilderApp extends LitElement {
       .toSorted((a, b) => a.localeCompare(b));
   }
 
+  private collectToolPolicySuggestionsFromConfig(): string[] {
+    const suggestions = new Set<string>(TOOL_POLICY_BASE_SUGGESTIONS);
+
+    const pluginEntries = getFieldValue(this.config, "plugins.entries");
+    if (isRecord(pluginEntries)) {
+      for (const pluginId of Object.keys(pluginEntries)) {
+        const trimmed = pluginId.trim();
+        if (trimmed) {
+          suggestions.add(trimmed);
+        }
+      }
+    }
+
+    return Array.from(suggestions).toSorted((a, b) => a.localeCompare(b));
+  }
+
   private refreshSuggestionCaches(): void {
     if (this.suggestionCacheConfig === this.config) {
       return;
@@ -501,6 +539,7 @@ class ConfigBuilderApp extends LitElement {
     this.suggestionCacheConfig = this.config;
     this.modelSuggestionsCache = this.collectModelSuggestionsFromConfig();
     this.authProfileSuggestionsCache = this.collectAuthProfileSuggestionsFromConfig();
+    this.toolPolicySuggestionsCache = this.collectToolPolicySuggestionsFromConfig();
   }
 
   private fieldSuggestions(field: ExplorerField): string[] {
@@ -538,6 +577,10 @@ class ConfigBuilderApp extends LitElement {
 
     if (field.path === "auth.order") {
       addMany(this.authProfileSuggestionsCache);
+    }
+
+    if (isToolPolicyPath(field.path)) {
+      addMany(this.toolPolicySuggestionsCache);
     }
 
     return Array.from(suggestions).toSorted((a, b) => a.localeCompare(b));
