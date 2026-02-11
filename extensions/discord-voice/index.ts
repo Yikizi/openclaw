@@ -38,15 +38,10 @@ const plugin = {
   id: "discord-voice",
   name: "Discord Voice",
   description: "Estonian voice agent for Discord with local STT/TTS",
-  configSchema: {
-    parse(value: unknown): DiscordVoicePluginConfig {
-      if (!value || typeof value !== "object") return {};
-      return value as DiscordVoicePluginConfig;
-    },
-  },
-
   register(api: OpenClawPluginApi) {
-    const config = this.configSchema.parse(api.pluginConfig) as DiscordVoicePluginConfig;
+    const raw = api.pluginConfig;
+    const config: DiscordVoicePluginConfig =
+      raw && typeof raw === "object" ? (raw as DiscordVoicePluginConfig) : {};
     if (config.enabled === false) return;
 
     let bridge: VoiceBridge | null = null;
