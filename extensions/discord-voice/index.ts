@@ -156,10 +156,19 @@ const plugin = {
 
               const identity = deps.resolveAgentIdentity(cfg, agentId);
               const agentName = identity?.name?.trim() || "assistant";
-              const thinkLevel = deps.resolveThinkingDefault({
-                cfg,
+
+              // Resolve provider/model from config (not hardcoded defaults)
+              const modelRef = deps.resolveDefaultModelForAgent?.({ cfg }) ?? {
                 provider: deps.DEFAULT_PROVIDER,
                 model: deps.DEFAULT_MODEL,
+              };
+              const provider = modelRef.provider ?? deps.DEFAULT_PROVIDER;
+              const model = modelRef.model ?? deps.DEFAULT_MODEL;
+
+              const thinkLevel = deps.resolveThinkingDefault({
+                cfg,
+                provider,
+                model,
               });
               const timeoutMs = deps.resolveAgentTimeoutMs({ cfg });
 
@@ -171,8 +180,8 @@ const plugin = {
                 workspaceDir,
                 config: cfg,
                 prompt: text,
-                provider: deps.DEFAULT_PROVIDER,
-                model: deps.DEFAULT_MODEL,
+                provider,
+                model,
                 thinkLevel,
                 verboseLevel: "off",
                 timeoutMs,
