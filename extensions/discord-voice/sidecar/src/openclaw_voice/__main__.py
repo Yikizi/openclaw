@@ -25,10 +25,14 @@ from .stt_client import SttClient, SttConfig, WyomingSttClient
 from .tts_client import TtsClient, TtsConfig
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="[voice-sidecar] %(levelname)s %(name)s: %(message)s",
     stream=sys.stderr,
 )
+# Quiet noisy discord internals
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.http").setLevel(logging.WARNING)
+logging.getLogger("discord.client").setLevel(logging.INFO)
 log = logging.getLogger(__name__)
 
 

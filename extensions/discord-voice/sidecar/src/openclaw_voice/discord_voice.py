@@ -109,8 +109,13 @@ class DiscordVoiceBot:
             # Set up audio sink for receiving voice
             # Capture the running loop now (we're on the main asyncio thread)
             loop = asyncio.get_running_loop()
+            _audio_frame_count = 0
 
             def audio_callback(user: discord.User | discord.Member | None, data: voice_recv.VoiceData) -> None:
+                nonlocal _audio_frame_count
+                _audio_frame_count += 1
+                if _audio_frame_count <= 3 or _audio_frame_count % 500 == 0:
+                    log.info("Audio frame #%d from user=%s pcm_len=%d", _audio_frame_count, user, len(data.pcm) if data.pcm else 0)
                 if user is None or user.bot:
                     return
                 # data.pcm is 48kHz stereo 16-bit PCM
@@ -120,7 +125,10 @@ class DiscordVoiceBot:
                     self._handle_audio(session_id, user.id, data.pcm),
                 )
 
-            vc.listen(voice_recv.BasicSink(audio_callback))
+            sink = voice_recv.BasicSink(audio_callback)
+            log.info("Starting voice_recv listener with sink=%s on vc=%s", sink, vc)
+            vc.listen(sink)
+            log.info("voice_recv listener started, is_listening=%s", vc.is_listening())
 
             self._sessions[session_id] = session
             await self._on_state_change(session_id, "connected", None)
@@ -182,6 +190,11 @@ class DiscordVoiceBot:
         # Simple energy-based VAD
         rms = audioop.rms(pcm_16k, 2)
         is_speech = rms > 300  # Tunable threshold
+
+        # Debug: log RMS periodically
+        buf_len = len(session.user_audio.get(user_id, b""))
+        if is_speech or buf_len > 0:
+            log.debug("user=%d rms=%d speech=%s buf=%d", user_id, rms, is_speech, buf_len)
 
         if is_speech:
             if session.user_silence.get(user_id, 0) > 0:
