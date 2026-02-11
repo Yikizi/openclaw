@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import audioop
+import io
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
@@ -22,8 +24,9 @@ log = logging.getLogger(__name__)
 # Discord voice: 48kHz stereo Opus → we need 16kHz mono PCM for STT
 DISCORD_SAMPLE_RATE = 48000
 STT_SAMPLE_RATE = 16000
-FRAME_MS = 20  # Discord sends 20ms Opus frames
-SILENCE_THRESHOLD_MS = 800  # After this much silence, finalize STT
+SILENCE_THRESHOLD_S = 0.8  # After this much silence, finalize STT
+WATCHDOG_INTERVAL_S = 0.2  # How often the watchdog checks for stale buffers
+RMS_SPEECH_THRESHOLD = 300  # Energy threshold for speech detection
 
 
 @dataclass
@@ -34,8 +37,10 @@ class VoiceSession:
     voice_client: discord.VoiceClient | None = None
     # Per-user audio buffers for STT (user_id → PCM chunks)
     user_audio: dict[int, bytearray] = field(default_factory=lambda: defaultdict(bytearray))
-    # Per-user silence counters (frames of silence)
-    user_silence: dict[int, int] = field(default_factory=lambda: defaultdict(int))
+    # Per-user timestamp of last speech frame (monotonic clock)
+    user_last_speech: dict[int, float] = field(default_factory=dict)
+    # Per-user flag: True while user is actively speaking
+    user_speaking: dict[int, bool] = field(default_factory=lambda: defaultdict(bool))
     is_playing: bool = False
 
 
@@ -61,6 +66,7 @@ class DiscordVoiceBot:
         self._sessions: dict[str, VoiceSession] = {}
         self._client: discord.Client | None = None
         self._ready = asyncio.Event()
+        self._watchdog_task: asyncio.Task | None = None
 
     async def start(self, token: str) -> None:
         """Start the Discord bot with minimal intents."""
@@ -119,10 +125,9 @@ class DiscordVoiceBot:
                 if user is None or user.bot:
                     return
                 # data.pcm is 48kHz stereo 16-bit PCM
-                # Called from packet-router thread → schedule on main loop
+                # Called from packet-router thread → schedule sync handler on main loop
                 loop.call_soon_threadsafe(
-                    asyncio.ensure_future,
-                    self._handle_audio(session_id, user.id, data.pcm),
+                    self._handle_audio_sync, session_id, user.id, data.pcm,
                 )
 
             sink = voice_recv.BasicSink(audio_callback)
@@ -131,6 +136,11 @@ class DiscordVoiceBot:
             log.info("voice_recv listener started, is_listening=%s", vc.is_listening())
 
             self._sessions[session_id] = session
+
+            # Start watchdog if not already running
+            if self._watchdog_task is None or self._watchdog_task.done():
+                self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
             await self._on_state_change(session_id, "connected", None)
 
         except Exception as exc:
@@ -176,51 +186,75 @@ class DiscordVoiceBot:
             session.voice_client.stop()
             session.is_playing = False
 
-    async def _handle_audio(self, session_id: str, user_id: int, pcm_48k_stereo: bytes) -> None:
-        """Process incoming voice audio: downsample and buffer for STT."""
+    def _handle_audio_sync(self, session_id: str, user_id: int, pcm_48k_stereo: bytes) -> None:
+        """Process incoming voice audio: downsample and buffer for STT.
+
+        IMPORTANT: This is deliberately non-async to avoid Task interleaving.
+        The watchdog timer handles finalization asynchronously.
+        """
         session = self._sessions.get(session_id)
         if not session:
             return
 
-        # Stereo → mono
+        # Stereo → mono → 16kHz
         mono = audioop.tomono(pcm_48k_stereo, 2, 1, 0)
-        # 48kHz → 16kHz
         pcm_16k, _ = audioop.ratecv(mono, 2, 1, DISCORD_SAMPLE_RATE, STT_SAMPLE_RATE, None)
 
         # Simple energy-based VAD
         rms = audioop.rms(pcm_16k, 2)
-        is_speech = rms > 300  # Tunable threshold
-
-        # Debug: log RMS periodically
-        buf_len = len(session.user_audio.get(user_id, b""))
-        if is_speech or buf_len > 0:
-            log.debug("user=%d rms=%d speech=%s buf=%d", user_id, rms, is_speech, buf_len)
+        is_speech = rms > RMS_SPEECH_THRESHOLD
+        now = time.monotonic()
 
         if is_speech:
-            if session.user_silence.get(user_id, 0) > 0:
-                # Transition from silence to speech
-                await self._on_voice_activity(session_id, user_id, True)
-            session.user_silence[user_id] = 0
+            if not session.user_speaking.get(user_id):
+                log.info("Speech start: user=%d rms=%d", user_id, rms)
+                session.user_speaking[user_id] = True
+            session.user_last_speech[user_id] = now
             session.user_audio[user_id].extend(pcm_16k)
-        else:
-            silence_frames = session.user_silence.get(user_id, 0) + 1
-            session.user_silence[user_id] = silence_frames
 
-            # If we have buffered audio and enough silence → finalize
-            silence_ms = silence_frames * FRAME_MS
-            if session.user_audio[user_id] and silence_ms >= SILENCE_THRESHOLD_MS:
-                audio = bytes(session.user_audio[user_id])
-                session.user_audio[user_id].clear()
-                await self._on_voice_activity(session_id, user_id, False)
-                await self._on_transcript_ready(session_id, user_id, audio)
+    async def _watchdog_loop(self) -> None:
+        """Periodically check for users who stopped speaking and finalize their audio."""
+        log.info("Audio watchdog started (interval=%.1fs, threshold=%.1fs)",
+                 WATCHDOG_INTERVAL_S, SILENCE_THRESHOLD_S)
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_S)
+            now = time.monotonic()
+
+            for session in list(self._sessions.values()):
+                for user_id in list(session.user_last_speech.keys()):
+                    last = session.user_last_speech.get(user_id, 0)
+                    elapsed = now - last
+                    has_audio = bool(session.user_audio.get(user_id))
+
+                    if has_audio and elapsed >= SILENCE_THRESHOLD_S:
+                        audio = bytes(session.user_audio[user_id])
+                        session.user_audio[user_id].clear()
+                        was_speaking = session.user_speaking.get(user_id, False)
+                        session.user_speaking[user_id] = False
+                        del session.user_last_speech[user_id]
+
+                        buf_ms = len(audio) / 2 / STT_SAMPLE_RATE * 1000
+                        log.info(
+                            "Finalize: user=%d buf=%.0fms silence=%.0fms",
+                            user_id, buf_ms, elapsed * 1000,
+                        )
+
+                        try:
+                            if was_speaking:
+                                await self._on_voice_activity(
+                                    session.session_id, user_id, False
+                                )
+                            await self._on_transcript_ready(
+                                session.session_id, user_id, audio
+                            )
+                        except Exception:
+                            log.exception("Error in finalization for user=%d", user_id)
 
     async def close(self) -> None:
         """Disconnect all sessions and stop the bot."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
         for session_id in list(self._sessions.keys()):
             await self.leave(session_id)
         if self._client:
             await self._client.close()
-
-
-# Need io import for PCMAudio
-import io

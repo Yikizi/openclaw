@@ -188,19 +188,27 @@ class VoiceSidecar:
     async def _on_audio_for_stt(self, session_id: str, user_id: int, pcm_16k: bytes) -> None:
         """Audio buffer ready → send to STT → forward transcript to TS."""
         if not self._stt:
+            log.warning("STT not configured, dropping %d bytes of audio", len(pcm_16k))
             return
+
+        buf_ms = len(pcm_16k) / 2 / 16000 * 1000
+        log.info("Sending %.0fms audio to STT for user=%d", buf_ms, user_id)
 
         async def audio_iter():
             yield pcm_16k
 
-        async for text, is_final in self._stt.transcribe_stream(audio_iter()):
-            if text.strip():
-                await self._ipc.send({
-                    "type": "transcript",
-                    "sessionId": session_id,
-                    "text": text,
-                    "isFinal": is_final,
-                })
+        try:
+            async for text, is_final in self._stt.transcribe_stream(audio_iter()):
+                if text.strip():
+                    log.info("STT result: '%s' (final=%s) user=%d", text, is_final, user_id)
+                    await self._ipc.send({
+                        "type": "transcript",
+                        "sessionId": session_id,
+                        "text": text,
+                        "isFinal": is_final,
+                    })
+        except Exception:
+            log.exception("STT failed for user=%d", user_id)
 
     async def _on_voice_activity(self, session_id: str, user_id: int, is_speaking: bool) -> None:
         await self._ipc.send({
