@@ -83,18 +83,26 @@ class WyomingSttClient(SttClient):
             )
 
             # Stream audio chunks
+            total_bytes = 0
             async for chunk in audio_chunks:
+                total_bytes += len(chunk)
                 await _wyoming_send_audio(writer, chunk, sample_rate)
 
             # Signal end of audio
             await _wyoming_send_event(writer, "audio-stop")
+            log.info("Sent %d bytes to Wyoming, waiting for transcript...", total_bytes)
 
             # Read transcript response
             event = await _wyoming_read_event(reader)
+            log.info("Wyoming response: %s", event)
             if event and event.get("type") == "transcript":
                 text = event.get("data", {}).get("text", "")
                 if text:
                     yield (text, True)
+                else:
+                    log.warning("Wyoming returned empty transcript")
+            else:
+                log.warning("Wyoming returned unexpected event: %s", event)
 
         except (ConnectionError, OSError) as exc:
             log.error("Wyoming STT connection error: %s", exc)
