@@ -6,10 +6,13 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { mkdirSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { VoiceBridge, type VoiceBridgeConfig } from "./src/voice-bridge.js";
 import { VoiceSession } from "./src/voice-session.js";
+import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +107,20 @@ const plugin = {
         const b = await ensureBridge();
         const sessionId = `voice-${guildId}-${Date.now()}`;
 
+        // Transcript log directory
+        const transcriptDir = resolve(
+          process.env.HOME ?? "/tmp",
+          ".openclaw",
+          "voice-transcripts",
+        );
+        mkdirSync(transcriptDir, { recursive: true });
+        const transcriptFile = resolve(transcriptDir, `${sessionId}.log`);
+
+        const logTranscript = (speaker: string, text: string) => {
+          const ts = new Date().toISOString();
+          appendFileSync(transcriptFile, `[${ts}] ${speaker}: ${text}\n`);
+        };
+
         const session = new VoiceSession({
           sessionId,
           guildId,
@@ -111,29 +128,95 @@ const plugin = {
           botToken,
           bridge: b,
           sendToAgent: async (text) => {
-            // TODO(human): Implement voice transcript → agent routing
-            //
-            // Available APIs (from api.runtime):
-            //   - api.runtime.channel.reply.dispatchReplyFromConfig(...)
-            //     Full pipeline: routing → envelope → agent → response
-            //     Pro: proper session tracking, memory, tool access
-            //     Con: requires building full InboundContext
-            //
-            //   - api.runtime.channel.discord.sendMessageDiscord(channelId, text)
-            //     Send as Discord text message (bot talks to itself)
-            //     Pro: simple, triggers normal Discord inbound flow
-            //     Con: creates visible text message in channel
-            //
-            //   - api.runtime.system.enqueueSystemEvent({...})
-            //     Lightweight system event
-            //     Pro: no visible side effects
-            //     Con: may not trigger full agent pipeline
-            //
-            // Consider: should voice transcripts create a new agent session
-            // per voice call, or reuse the existing Discord channel session?
-            // How should the agent's text response be routed back to TTS?
-            //
+            logTranscript("USER", text);
             api.logger.info(`[discord-voice] User said: "${text}"`);
+
+            try {
+              const deps = await loadCoreAgentDeps();
+              const cfg = api.config as CoreConfig;
+              const agentId = "main";
+
+              const storePath = deps.resolveStorePath(cfg.session?.store, { agentId });
+              const agentDir = deps.resolveAgentDir(cfg, agentId);
+              const workspaceDir = deps.resolveAgentWorkspaceDir(cfg, agentId);
+              await deps.ensureAgentWorkspace({ dir: workspaceDir });
+
+              // Persistent session per guild (survives reconnects)
+              const voiceSessionKey = `voice:discord:${guildId}`;
+              const sessionStore = deps.loadSessionStore(storePath);
+              let entry = sessionStore[voiceSessionKey] as
+                | { sessionId: string; updatedAt: number }
+                | undefined;
+              if (!entry) {
+                entry = { sessionId: crypto.randomUUID(), updatedAt: Date.now() };
+                sessionStore[voiceSessionKey] = entry;
+                await deps.saveSessionStore(storePath, sessionStore);
+              }
+
+              const agentSessionFile = deps.resolveSessionFilePath(
+                entry.sessionId,
+                entry,
+                { agentId },
+              );
+
+              const identity = deps.resolveAgentIdentity(cfg, agentId);
+              const agentName = identity?.name?.trim() || "assistant";
+              const thinkLevel = deps.resolveThinkingDefault({
+                cfg,
+                provider: deps.DEFAULT_PROVIDER,
+                model: deps.DEFAULT_MODEL,
+              });
+              const timeoutMs = deps.resolveAgentTimeoutMs({ cfg });
+
+              const result = await deps.runEmbeddedPiAgent({
+                sessionId: entry.sessionId,
+                sessionKey: voiceSessionKey,
+                messageProvider: "voice",
+                sessionFile: agentSessionFile,
+                workspaceDir,
+                config: cfg,
+                prompt: text,
+                provider: deps.DEFAULT_PROVIDER,
+                model: deps.DEFAULT_MODEL,
+                thinkLevel,
+                verboseLevel: "off",
+                timeoutMs,
+                runId: `voice:${sessionId}:${Date.now()}`,
+                lane: "voice",
+                agentDir,
+                extraSystemPrompt: [
+                  `You are ${agentName}, a voice assistant speaking Estonian in a Discord voice channel.`,
+                  "Keep responses brief and conversational (1-3 sentences).",
+                  "Avoid markdown, code blocks, or formatting — your text will be spoken aloud via TTS.",
+                  "Use natural spoken Estonian. You have access to all your usual tools.",
+                ].join(" "),
+
+                // Stream text to TTS as it arrives
+                onAssistantMessageStart: () => {
+                  session.onAssistantMessageStart();
+                },
+                onBlockReply: (payload) => {
+                  if (payload.text) {
+                    session.onBlockReply(payload.text);
+                    logTranscript("AGENT", payload.text);
+                  }
+                },
+                onBlockReplyFlush: () => {
+                  session.onBlockReplyFlush();
+                },
+                onToolResult: (payload) => {
+                  session.onToolResult("tool", payload);
+                },
+              });
+
+              // Log any errors
+              const errors = (result.payloads ?? []).filter((p) => p.isError);
+              for (const err of errors) {
+                api.logger.warn(`[discord-voice] Agent error: ${err.text}`);
+              }
+            } catch (err) {
+              api.logger.error(`[discord-voice] sendToAgent failed: ${err}`);
+            }
           },
           logger: api.logger,
         });
