@@ -107,12 +107,16 @@ class DiscordVoiceBot:
             session.voice_client = vc
 
             # Set up audio sink for receiving voice
+            # Capture the running loop now (we're on the main asyncio thread)
+            loop = asyncio.get_running_loop()
+
             def audio_callback(user: discord.User | discord.Member | None, data: voice_recv.VoiceData) -> None:
                 if user is None or user.bot:
                     return
                 # data.pcm is 48kHz stereo 16-bit PCM
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    asyncio.create_task,
+                # Called from packet-router thread → schedule on main loop
+                loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
                     self._handle_audio(session_id, user.id, data.pcm),
                 )
 
