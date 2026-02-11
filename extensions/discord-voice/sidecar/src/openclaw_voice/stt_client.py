@@ -153,15 +153,27 @@ async def _wyoming_send_audio(
 async def _wyoming_read_event(
     reader: asyncio.StreamReader,
 ) -> dict | None:
-    """Read a single Wyoming event."""
+    """Read a single Wyoming event.
+
+    Wyoming events are JSON lines optionally followed by a binary payload.
+    The payload size is indicated by 'payload_length' or 'data_length'.
+    For transcript events, the payload contains the transcript text.
+    """
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=30.0)
         if not line:
             return None
         event = _json.loads(line.decode("utf-8"))
-        payload_len = event.get("payload_length", 0)
+        # Wyoming uses both 'payload_length' and 'data_length' for payload size
+        payload_len = event.get("payload_length", 0) or event.get("data_length", 0)
         if payload_len > 0:
-            await reader.readexactly(payload_len)  # consume payload
+            payload = await reader.readexactly(payload_len)
+            # For transcript events, the payload IS the text
+            if event.get("type") == "transcript":
+                text = payload.decode("utf-8", errors="replace").strip()
+                if "data" not in event:
+                    event["data"] = {}
+                event["data"]["text"] = text
         return event
     except (asyncio.TimeoutError, _json.JSONDecodeError) as exc:
         log.warning("Wyoming read error: %s", exc)

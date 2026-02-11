@@ -191,6 +191,10 @@ class DiscordVoiceBot:
 
         IMPORTANT: This is deliberately non-async to avoid Task interleaving.
         The watchdog timer handles finalization asynchronously.
+
+        We buffer ALL frames while a user is speaking, not just high-energy
+        ones. Speech has natural energy dips between syllables that should
+        still be captured. The RMS threshold only controls speech start/end.
         """
         session = self._sessions.get(session_id)
         if not session:
@@ -210,6 +214,9 @@ class DiscordVoiceBot:
                 log.info("Speech start: user=%d rms=%d", user_id, rms)
                 session.user_speaking[user_id] = True
             session.user_last_speech[user_id] = now
+
+        # Buffer audio whenever the user is speaking (even low-energy frames)
+        if session.user_speaking.get(user_id):
             session.user_audio[user_id].extend(pcm_16k)
 
     async def _watchdog_loop(self) -> None:
