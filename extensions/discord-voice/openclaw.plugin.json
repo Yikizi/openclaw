@@ -1,0 +1,57 @@
+{
+  "id": "discord-voice",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "guildId": {
+        "type": "string",
+        "description": "Discord guild (server) ID"
+      },
+      "channelId": {
+        "type": "string",
+        "description": "Default voice channel ID to join"
+      },
+      "stt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["wyoming", "sherpa"]
+          },
+          "wyomingHost": {
+            "type": "string"
+          },
+          "wyomingPort": {
+            "type": "integer"
+          },
+          "modelDir": {
+            "type": "string"
+          }
+        }
+      },
+      "tts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiUrl": {
+            "type": "string"
+          },
+          "speaker": {
+            "type": "string"
+          },
+          "speed": {
+            "type": "number"
+          }
+        }
+      },
+      "pythonPath": {
+        "type": "string"
+      }
+    }
+  }
+}

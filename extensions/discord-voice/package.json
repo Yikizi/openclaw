@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/plugin-discord-voice",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Estonian voice agent for Discord - local STT/TTS via Python sidecar",
+  "main": "index.ts",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  }
+}
