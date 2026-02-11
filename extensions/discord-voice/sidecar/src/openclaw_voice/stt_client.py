@@ -168,12 +168,17 @@ async def _wyoming_read_event(
         payload_len = event.get("payload_length", 0) or event.get("data_length", 0)
         if payload_len > 0:
             payload = await reader.readexactly(payload_len)
-            # For transcript events, the payload IS the text
+            # For transcript events, the payload is JSON with the text
             if event.get("type") == "transcript":
-                text = payload.decode("utf-8", errors="replace").strip()
+                raw = payload.decode("utf-8", errors="replace").strip()
                 if "data" not in event:
                     event["data"] = {}
-                event["data"]["text"] = text
+                # Payload may be JSON like {"text": "..."} or plain text
+                try:
+                    parsed = _json.loads(raw)
+                    event["data"]["text"] = parsed.get("text", raw)
+                except _json.JSONDecodeError:
+                    event["data"]["text"] = raw
         return event
     except (asyncio.TimeoutError, _json.JSONDecodeError) as exc:
         log.warning("Wyoming read error: %s", exc)
