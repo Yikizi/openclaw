@@ -5,6 +5,7 @@ description = "Audio sidecar for OpenClaw Discord voice agent (Estonian STT/TTS)
 requires-python = ">=3.11"
 dependencies = [
     "discord.py[voice]>=2.4",
+    "discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv.git",
     "aiohttp>=3.9",
 ]
 
